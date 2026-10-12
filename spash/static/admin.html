@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f1d17">
+  <title>Gestion du club</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="wide">
+  <header class="top">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div>
+        <h1 id="club">Gestion du club</h1>
+        <div class="sub">Espace gérant</div>
+      </div>
+    </div>
+  </header>
+
+  <div id="warnings"></div>
+
+  <h2>Terrains</h2>
+  <div class="grid" id="courts"></div>
+
+  <h2>Stockage</h2>
+  <div class="card" id="disk"></div>
+
+  <h2>Matchs enregistrés</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Date</th><th>Terrain</th><th>Joueurs</th><th>Score</th><th>Durée</th><th>Clips</th><th>État</th><th></th></tr></thead>
+      <tbody id="matches"></tbody>
+    </table>
+  </div>
+</main>
+
+<script src="/static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const STATUS = { recording: "En cours", processing: "Préparation", done: "Prête", error: "Erreur" };
+
+function fmtBytes(n) {
+  const u = ["o", "Ko", "Mo", "Go", "To"];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(i >= 3 ? 1 : 0)} ${u[i]}`;
+}
+
+async function load() {
+  let d;
+  try { d = await api("GET", "/api/admin/overview"); }
+  catch (e) { $("warnings").innerHTML = `<div class="alert">${esc(e.message)}</div>`; return; }
+
+  $("club").textContent = d.club;
+  const warn = [];
+  if (d.default_password) warn.push("Le mot de passe gérant est celui par défaut : changez <code>mot_de_passe_admin</code> dans config.toml.");
+  if (!d.public_url) warn.push("Aucune <code>url_publique</code> : les QR codes ne fonctionneront que sur le réseau du club. Voir docs/ACCES-DISTANT.md.");
+  $("warnings").innerHTML = warn.map(w => `<div class="alert">${w}</div>`).join("");
+
+  renderCourts(d);
+
+  const used = d.disk.total - d.disk.free;
+  $("disk").innerHTML = `
+    <div>${fmtBytes(d.disk.free)} libres sur ${fmtBytes(d.disk.total)}</div>
+    <div class="meter"><div style="width:${(used / d.disk.total * 100).toFixed(1)}%"></div></div>
+    <div class="muted small">Les matchs de plus de ${d.retention_days} jours sont supprimés automatiquement${d.retention_days ? "" : " (désactivé)"}.
+      Comptez environ 3 à 4 Go par heure de match en 1080p.</div>
+    <div class="actions"><button class="btn-small" id="cleanup">Faire le ménage maintenant</button></div>`;
+  $("cleanup").onclick = async () => {
+    const r = await api("POST", "/api/admin/cleanup");
+    toast(`${r.deleted} match(s) supprimé(s)`);
+    load();
+  };
+
+  $("matches").innerHTML = d.matches.map(m => `
+    <tr>
+      <td>${fmtDate(m.started_at)}</td>
+      <td>${esc(m.court_id)}</td>
+      <td>${esc(m.teams)}</td>
+      <td>${esc(m.score)}</td>
+      <td>${fmtDuration(m.duration)}</td>
+      <td>${m.clips}</td>
+      <td title="${esc(m.error || "")}">${STATUS[m.status] || m.status}</td>
+      <td><a class="btn btn-small" href="/m/${encodeURIComponent(m.token)}" target="_blank">Voir</a>
+          ${m.status === "done" || m.status === "error" ? `<button class="btn-small btn-danger" data-del="${m.id}">Supprimer</button>` : ""}</td>
+    </tr>`).join("") || `<tr><td colspan="8" class="muted">Aucun match pour l'instant.</td></tr>`;
+  document.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("Supprimer définitivement ce match et ses vidéos ?")) return;
+    try { await api("DELETE", `/api/admin/matches/${b.dataset.del}`); toast("Match supprimé"); }
+    catch (e) { toast(e.message, true); }
+    load();
+  });
+}
+
+function renderCourts(d) {
+  const el = $("courts");
+  // On garde les cartes déjà affichées (sinon l'aperçu caméra disparaîtrait à chaque rafraîchissement).
+  for (const c of d.courts) {
+    let card = el.querySelector(`[data-court="${CSS.escape(c.id)}"]`);
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "card";
+      card.dataset.court = c.id;
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <strong>${esc(c.name)}</strong><span class="badges"></span>
+        </div>
+        <div class="state muted small" style="margin-top:6px"></div>
+        <div class="qr"><img alt="QR code du terrain" src="/api/admin/courts/${encodeURIComponent(c.id)}/qr.svg?${Date.now()}"></div>
+        <div class="link-box url"></div>
+        <img class="snapshot hidden" alt="Image de la caméra">
+        <div class="actions two">
+          <a class="btn btn-small open" target="_blank">Ouvrir le terrain</a>
+          <button class="btn-small snap">Tester la caméra</button>
+          <button class="btn-small live"></button>
+          <button class="btn-small btn-danger end">Arrêter le match</button>
+        </div>
+        <div class="actions"><button class="btn-small rotate">Changer le QR code</button></div>`;
+      el.appendChild(card);
+      card.querySelector(".snap").onclick = async () => {
+        const img = card.querySelector(".snapshot");
+        const btn = card.querySelector(".snap");
+        btn.disabled = true; btn.textContent = "Connexion…";
+        try {
+          const res = await fetch(`/api/admin/courts/${encodeURIComponent(c.id)}/snapshot`);
+          if (!res.ok) throw new Error((await res.json()).detail);
+          img.src = URL.createObjectURL(await res.blob());
+          img.classList.remove("hidden");
+        } catch (e) { toast(e.message, true); }
+        btn.disabled = false; btn.textContent = "Tester la caméra";
+      };
+      card.querySelector(".rotate").onclick = async () => {
+        if (!confirm("Créer un nouveau QR code ? L'ancien ne fonctionnera plus : il faudra réimprimer celui du terrain.")) return;
+        await api("POST", `/api/admin/courts/${encodeURIComponent(c.id)}/rotate-key`);
+        card.querySelector(".qr img").src = `/api/admin/courts/${encodeURIComponent(c.id)}/qr.svg?${Date.now()}`;
+        load();
+      };
+    }
+    const running = c.live.running;
+    card.querySelector(".badges").innerHTML =
+      (running ? '<span class="badge live">En direct</span> ' : "") + (c.match ? '<span class="badge rec">Rec</span>' : "");
+    card.querySelector(".state").innerHTML = c.match
+      ? `Match en cours : ${esc(c.match.teams)} · ${esc(c.match.score)}`
+      : "Aucun match en cours";
+    if (c.recording_error) card.querySelector(".state").innerHTML += `<div class="alert" style="margin-top:8px">Caméra : ${esc(c.recording_error)}</div>`;
+    if (c.live.error) card.querySelector(".state").innerHTML += `<div class="alert" style="margin-top:8px">Direct : ${esc(c.live.error)}</div>`;
+    card.querySelector(".url").textContent = c.url;
+    card.querySelector(".open").href = c.url;
+    const liveBtn = card.querySelector(".live");
+    liveBtn.textContent = running ? "■ Arrêter le direct" : "● Lancer le direct";
+    liveBtn.disabled = !d.live_configured;
+    liveBtn.title = d.live_configured ? "" : "Ajoutez la clé YouTube dans config.toml";
+    liveBtn.onclick = async () => {
+      try { await api("POST", `/api/admin/courts/${encodeURIComponent(c.id)}/live/${running ? "stop" : "start"}`); }
+      catch (e) { toast(e.message, true); }
+      setTimeout(load, 1500);
+    };
+    const endBtn = card.querySelector(".end");
+    endBtn.disabled = !c.match;
+    endBtn.onclick = async () => {
+      if (!confirm("Arrêter le match en cours sur ce terrain ?")) return;
+      try { await api("POST", `/api/admin/courts/${encodeURIComponent(c.id)}/end`); } catch (e) { toast(e.message, true); }
+      load();
+    };
+  }
+}
+
+load();
+setInterval(() => { if (!document.hidden) load(); }, 5000);
+</script>
+</body>
+</html>

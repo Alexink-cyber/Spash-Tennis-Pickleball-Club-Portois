@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f1d17">
+  <title>Vidéo des terrains</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <header class="top">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div>
+        <h1 id="club">Vidéo des terrains</h1>
+        <div class="sub">Filmez votre match, gardez vos temps forts</div>
+      </div>
+    </div>
+  </header>
+  <div class="card">
+    <h2 style="margin-top:0">Comment ça marche ?</h2>
+    <ol>
+      <li>Scannez le QR code affiché sur le terrain avec votre téléphone.</li>
+      <li>Entrez vos noms et lancez l'enregistrement.</li>
+      <li>Comptez les points et appuyez sur « ⚡ Temps fort » après un beau point.</li>
+      <li>À la fin, récupérez la vidéo et vos temps forts avec le lien du match.</li>
+    </ol>
+  </div>
+  <p class="muted small center"><a href="/admin" style="color:inherit">Espace gérant</a></p>
+</main>
+<script src="/static/common.js"></script>
+<script>
+api("GET", "/api/info").then(d => { document.getElementById("club").textContent = d.club; document.title = d.club; }).catch(() => {});
+</script>
+</body>
+</html>

@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1d17">
+  <title>Terrain</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <header class="top">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div>
+        <h1 id="court-name">Terrain</h1>
+        <div class="sub" id="club-name"></div>
+      </div>
+    </div>
+    <div id="badges"></div>
+  </header>
+
+  <div id="error" class="alert hidden"></div>
+  <div id="loading" class="muted center">Chargement…</div>
+
+  <!-- 1. Nouveau match -->
+  <section id="setup" class="hidden">
+    <form id="setup-form" class="card">
+      <h2 style="margin-top:0">Nouveau match</h2>
+      <div class="row">
+        <div>
+          <label for="team-a">Équipe A</label>
+          <input type="text" id="team-a" maxlength="40" placeholder="Ex. Julie / Marc" autocomplete="off">
+        </div>
+        <div>
+          <label for="team-b">Équipe B</label>
+          <input type="text" id="team-b" maxlength="40" placeholder="Ex. Paul / Léa" autocomplete="off">
+        </div>
+      </div>
+      <label for="format">Format</label>
+      <select id="format">
+        <option value="2-6-0">2 sets gagnants</option>
+        <option value="2-6-1">2 sets + super tie-break</option>
+        <option value="1-6-0">1 set</option>
+        <option value="2-4-1">Sets courts (4 jeux) + super tie-break</option>
+        <option value="1-4-0">1 set court (4 jeux)</option>
+        <option value="3-6-0">3 sets gagnants</option>
+      </select>
+      <label class="check"><input type="checkbox" id="no-ad"> Point décisif à 40-40</label>
+      <label for="first-server">Premier au service</label>
+      <select id="first-server">
+        <option value="0">Équipe A</option>
+        <option value="1">Équipe B</option>
+      </select>
+      <div class="actions">
+        <button type="submit" class="btn-primary" id="start-btn">● Démarrer l'enregistrement</button>
+      </div>
+      <p class="muted small">La vidéo est enregistrée sur l'ordinateur du club. À la fin, vous recevez un lien et un QR code pour récupérer votre match et vos temps forts.</p>
+    </form>
+  </section>
+
+  <!-- 2. Match en cours -->
+  <section id="playing" class="hidden">
+    <div class="scoreboard" id="scoreboard"></div>
+
+    <div class="point-buttons">
+      <button id="point-a"><strong>+1</strong><span id="label-a">Équipe A</span></button>
+      <button id="point-b"><strong>+1</strong><span id="label-b">Équipe B</span></button>
+    </div>
+
+    <div class="actions">
+      <button class="btn-primary highlight-btn" id="highlight-btn">⚡ Temps fort</button>
+    </div>
+    <div class="actions two">
+      <button id="replay-btn">↺ Revoir</button>
+      <button id="undo-btn">↶ Annuler</button>
+    </div>
+
+    <h2>Temps forts et replays</h2>
+    <div id="clips" class="clips"></div>
+    <p id="no-clips" class="muted small">Appuyez sur « Temps fort » juste après un beau point : les <span id="hl-sec">28</span> dernières secondes sont gardées.</p>
+
+    <div class="actions">
+      <button class="btn-danger" id="end-btn">■ Terminer le match</button>
+    </div>
+  </section>
+
+  <!-- 3. Match terminé -->
+  <section id="ended" class="hidden">
+    <div class="card center">
+      <h2 style="margin-top:0">Match terminé</h2>
+      <p class="muted">Scannez ce QR code pour récupérer la vidéo du match et vos temps forts, même depuis chez vous.</p>
+      <div class="qr" id="ended-qr"></div>
+      <div class="link-box" id="ended-link"></div>
+      <div class="actions two">
+        <button id="copy-btn">Copier le lien</button>
+        <a class="btn" id="open-link" href="#">Ouvrir</a>
+      </div>
+      <p class="muted small">La vidéo complète sera prête quelques instants après la fin du match.</p>
+    </div>
+    <div class="actions">
+      <button class="btn-primary" id="new-btn">Nouveau match</button>
+    </div>
+  </section>
+</main>
+
+<script src="/static/common.js"></script>
+<script>
+const courtId = decodeURIComponent(location.pathname.split("/")[2]);
+const key = new URLSearchParams(location.search).get("k") || "";
+const base = `/api/courts/${encodeURIComponent(courtId)}`;
+const q = `?k=${encodeURIComponent(key)}`;
+const $ = id => document.getElementById(id);
+const ENDED_KEY = `spash-ended-${courtId}`;
+
+let state = null;
+let busy = false;
+
+function show(section) {
+  for (const id of ["loading", "setup", "playing", "ended"]) $(id).classList.toggle("hidden", id !== section);
+}
+
+function showError(msg) {
+  $("error").textContent = msg || "";
+  $("error").classList.toggle("hidden", !msg);
+}
+
+function readEnded() {
+  try { return JSON.parse(sessionStorage.getItem(ENDED_KEY)); } catch (e) { return null; }
+}
+function writeEnded(v) {
+  try { v ? sessionStorage.setItem(ENDED_KEY, JSON.stringify(v)) : sessionStorage.removeItem(ENDED_KEY); } catch (e) {}
+}
+
+async function refresh() {
+  try {
+    state = await api("GET", base + q);
+    showError(state.recording_error ? "⚠ Caméra déconnectée : " + state.recording_error : "");
+  } catch (e) {
+    showError(e.message);
+    return;
+  }
+  render();
+}
+
+function render() {
+  $("court-name").textContent = state.court.name;
+  $("club-name").textContent = state.club;
+  document.title = `${state.court.name} · ${state.club}`;
+  const m = state.match;
+  $("badges").innerHTML = (state.live ? '<span class="badge live">En direct</span> ' : "") +
+    (m ? '<span class="badge rec">Rec</span>' : "");
+  $("hl-sec").textContent = Math.round(state.settings.highlight_seconds);
+
+  if (!m) {
+    const ended = readEnded();
+    if (ended) return renderEnded(ended);
+    return show("setup");
+  }
+  show("playing");
+  $("scoreboard").innerHTML = scoreboardHTML(m.team_a, m.team_b, m.score, scoreInfo(m.score) || m.format);
+  $("label-a").textContent = m.team_a;
+  $("label-b").textContent = m.team_b;
+  $("point-a").disabled = $("point-b").disabled = m.score.finished;
+  $("undo-btn").disabled = !m.can_undo;
+  renderClips(m.clips);
+}
+
+function renderClips(clips) {
+  $("no-clips").classList.toggle("hidden", clips.length > 0);
+  const el = $("clips");
+  // Ne rien toucher si rien n'a changé (sinon une vidéo en lecture s'arrêterait).
+  const signature = clips.map(c => c.id + ":" + c.status).join(",");
+  if (el.dataset.signature === signature) return;
+  el.dataset.signature = signature;
+  const existing = new Map([...el.children].map(c => [c.dataset.id + ":" + c.dataset.status, c]));
+  const wanted = [...clips].reverse().map(c => {
+    const node = existing.get(c.id + ":" + c.status);
+    if (node) return node;
+    const created = document.createElement("div");
+    created.className = "clip";
+    created.dataset.id = c.id;
+    created.dataset.status = c.status;
+    const title = c.kind === "highlight" ? "⚡ Temps fort" : "↺ Replay";
+    const media = c.status === "ready"
+      ? `<video src="${c.url}" controls playsinline preload="metadata"></video>`
+      : `<div class="pending">${c.status === "error" ? "Échec de la création" : "Préparation…"}</div>`;
+    created.innerHTML = `${media}<div class="meta"><span>${title}</span><span class="muted">${fmtDuration(c.t)}</span></div>`;
+    return created;
+  });
+  // On insère sans déplacer les vidéos existantes (un déplacement mettrait la lecture en pause).
+  for (const child of [...el.children]) if (!wanted.includes(child)) child.remove();
+  wanted.forEach((node, i) => { if (el.children[i] !== node) el.insertBefore(node, el.children[i] || null); });
+}
+
+function renderEnded(ended) {
+  show("ended");
+  $("ended-link").textContent = ended.url;
+  $("open-link").href = ended.url;
+  fetch(`/api/matches/${encodeURIComponent(ended.token)}/qr.svg`).then(r => r.text()).then(svg => { $("ended-qr").innerHTML = svg; });
+}
+
+async function action(fn) {
+  if (busy) return;
+  busy = true;
+  try { await fn(); } catch (e) { toast(e.message, true); }
+  finally { busy = false; }
+  await refresh();
+}
+
+$("setup-form").addEventListener("submit", e => {
+  e.preventDefault();
+  const [sets, games, stb] = $("format").value.split("-").map(Number);
+  $("start-btn").disabled = true;
+  $("start-btn").textContent = "Connexion à la caméra…";
+  action(async () => {
+    try {
+      await api("POST", `${base}/start${q}`, {
+        team_a: $("team-a").value, team_b: $("team-b").value,
+        sets_to_win: sets, games_per_set: games, super_tiebreak: !!stb,
+        no_ad: $("no-ad").checked, first_server: Number($("first-server").value),
+      });
+      toast("Enregistrement démarré");
+    } finally {
+      $("start-btn").disabled = false;
+      $("start-btn").textContent = "● Démarrer l'enregistrement";
+    }
+  });
+});
+
+$("team-a").addEventListener("input", () => { $("first-server").options[0].text = $("team-a").value || "Équipe A"; });
+$("team-b").addEventListener("input", () => { $("first-server").options[1].text = $("team-b").value || "Équipe B"; });
+
+$("point-a").onclick = () => action(() => api("POST", `${base}/point${q}`, { team: 0 }));
+$("point-b").onclick = () => action(() => api("POST", `${base}/point${q}`, { team: 1 }));
+$("undo-btn").onclick = () => action(() => api("POST", `${base}/undo${q}`));
+$("highlight-btn").onclick = () => action(async () => {
+  await api("POST", `${base}/clip${q}`, { kind: "highlight" });
+  toast("⚡ Temps fort enregistré !");
+});
+$("replay-btn").onclick = () => action(async () => {
+  await api("POST", `${base}/clip${q}`, { kind: "replay" });
+  toast("Replay en préparation…");
+});
+$("end-btn").onclick = () => {
+  if (!confirm("Terminer le match et arrêter l'enregistrement ?")) return;
+  action(async () => {
+    const m = await api("POST", `${base}/end${q}`);
+    writeEnded({ token: m.token, url: m.url });
+  });
+};
+$("new-btn").onclick = () => { writeEnded(null); refresh(); };
+$("copy-btn").onclick = async () => {
+  try { await navigator.clipboard.writeText($("ended-link").textContent); toast("Lien copié"); }
+  catch (e) { toast("Copie impossible : sélectionnez le lien", true); }
+};
+
+if (!key) {
+  $("loading").classList.add("hidden");
+  showError("Lien incomplet : scannez le QR code affiché sur le terrain.");
+} else {
+  refresh();
+  setInterval(() => { if (!busy && !document.hidden) refresh(); }, 2500);
+}
+</script>
+</body>
+</html>

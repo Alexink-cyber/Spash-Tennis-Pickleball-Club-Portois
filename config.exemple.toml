@@ -1,0 +1,50 @@
+# Configuration de Spash Club.
+# Copiez ce fichier en « config.toml » puis adaptez-le (demarrer.bat le fait la première fois).
+
+[club]
+nom = "Tennis Club"
+
+[serveur]
+host = "0.0.0.0"     # 0.0.0.0 = accessible depuis les téléphones du réseau du club
+port = 8000
+# Adresse internet du serveur, utilisée dans les QR codes pour que les joueurs
+# récupèrent leurs vidéos depuis chez eux (voir docs/ACCES-DISTANT.md).
+# Exemple : "https://video.monclub.fr". Laisser vide = adresse locale uniquement.
+url_publique = ""
+# Mot de passe de la page gérant (/admin). Le nom d'utilisateur peut être n'importe quoi.
+mot_de_passe_admin = "changeme"
+
+[stockage]
+dossier = "data"            # où sont rangées les vidéos et la base de données
+conservation_jours = 30     # les matchs plus anciens sont supprimés (0 = jamais)
+
+[video]
+ffmpeg = ""                 # vide = détection automatique
+duree_segment = 2           # secondes ; plus court = temps forts plus précis
+temps_fort_avant = 25       # secondes gardées avant l'appui sur « Temps fort »
+temps_fort_apres = 3        # secondes gardées après
+replay_secondes = 15        # durée de « Revoir le point »
+
+# Un bloc [[terrains]] par terrain filmé.
+# Trouver l'adresse RTSP de votre caméra : voir docs/CAMERAS.md.
+[[terrains]]
+id = "1"
+nom = "Terrain 1"
+camera_url = "rtsp://admin:motdepasse@192.168.1.64:554/Streaming/Channels/101"
+reencoder = false           # true seulement si la vidéo ne se lit pas (caméra en H.265, etc.)
+
+# [[terrains]]
+# id = "2"
+# nom = "Terrain 2"
+# camera_url = "rtsp://..."
+
+[direct]
+# Diffusion en direct : YouTube Studio > Passer au direct > Flux > « Clé de flux ».
+url_rtmp = "rtmp://a.rtmp.youtube.com/live2"
+cle = ""                    # vide = direct désactivé
+largeur = 1280
+hauteur = 720
+images_par_seconde = 25
+debit = "4500k"             # nécessite environ 5 Mbit/s en envoi (upload)
+encodeur = "libx264"        # "h264_nvenc" avec une carte NVIDIA : soulage le processeur
+logo = ""                   # image PNG (fond transparent) affichée en haut à droite

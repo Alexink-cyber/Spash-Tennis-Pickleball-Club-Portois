@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1d17">
+  <title>Mon match</title>
+  <link rel="icon" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <header class="top">
+    <div class="brand">
+      <div class="brand-dot"></div>
+      <div>
+        <h1 id="title">Mon match</h1>
+        <div class="sub" id="subtitle"></div>
+      </div>
+    </div>
+    <span id="status-badge"></span>
+  </header>
+
+  <div id="error" class="alert hidden"></div>
+
+  <div class="scoreboard" id="final-score"></div>
+
+  <h2>Vidéo du match</h2>
+  <div id="video-pending" class="card muted center hidden"></div>
+  <div id="video-block" class="hidden">
+    <div class="player" id="player">
+      <video id="video" controls playsinline preload="metadata"></video>
+      <div class="overlay-score" id="overlay"></div>
+      <canvas id="canvas"></canvas>
+    </div>
+    <div class="toolbar">
+      <button class="btn-small" id="toggle-overlay">Masquer le score</button>
+      <button class="btn-small" id="draw-btn">✎ Dessiner</button>
+      <button class="btn-small hidden" id="clear-btn">Effacer</button>
+      <a class="btn btn-small" id="download" download>⬇ Télécharger</a>
+    </div>
+    <p class="muted small" id="draw-help" hidden>Mettez la vidéo en pause et dessinez sur l'image pour montrer un placement ou une trajectoire.</p>
+  </div>
+
+  <h2>Temps forts et replays</h2>
+  <div id="clips" class="clips"></div>
+  <p id="no-clips" class="muted small hidden">Aucun temps fort pour ce match.</p>
+
+  <h2>Partager</h2>
+  <div class="card center">
+    <div class="qr" id="qr"></div>
+    <div class="link-box" id="link"></div>
+    <div class="actions">
+      <button id="share-btn">Partager le lien</button>
+    </div>
+    <p class="muted small">Toute personne qui a ce lien peut voir le match.</p>
+  </div>
+</main>
+
+<script src="/static/common.js"></script>
+<script>
+const token = decodeURIComponent(location.pathname.split("/")[2]);
+const $ = id => document.getElementById(id);
+let match = null;
+let timeline = [];
+let overlayOn = true;
+
+async function load() {
+  try {
+    match = await api("GET", `/api/matches/${encodeURIComponent(token)}`);
+  } catch (e) {
+    $("error").textContent = e.message;
+    $("error").classList.remove("hidden");
+    return;
+  }
+  timeline = match.timeline || [];
+  render();
+  if (match.status === "recording" || match.status === "processing" ||
+      match.clips.some(c => c.status === "pending")) {
+    setTimeout(load, 4000);
+  }
+}
+
+function render() {
+  const m = match;
+  document.title = `${m.team_a} – ${m.team_b}`;
+  $("title").textContent = `${m.team_a} – ${m.team_b}`;
+  $("subtitle").textContent = `${m.court.name} · ${fmtDate(m.started_at)}${m.duration ? " · " + fmtDuration(m.duration) : ""}`;
+  const badges = { recording: '<span class="badge rec">En cours</span>', processing: '<span class="badge">Préparation</span>',
+    done: '<span class="badge ok">Prêt</span>', error: '<span class="badge">Erreur</span>' };
+  $("status-badge").innerHTML = badges[m.status] || "";
+  $("final-score").innerHTML = scoreboardHTML(m.team_a, m.team_b, m.score, `${m.format} · ${m.score_text || "aucun point"}`);
+
+  if (m.video_url) {
+    $("video-pending").classList.add("hidden");
+    $("video-block").classList.remove("hidden");
+    if (!$("video").src) {
+      $("video").src = m.video_url;
+      $("download").href = m.video_url;
+    }
+  } else {
+    $("video-block").classList.add("hidden");
+    $("video-pending").classList.remove("hidden");
+    $("video-pending").textContent = {
+      recording: "Le match est en cours d'enregistrement. La vidéo complète sera disponible à la fin.",
+      processing: "La vidéo est en cours de préparation, encore quelques instants…",
+      error: "La vidéo n'a pas pu être enregistrée" + (m.error ? " : " + m.error : "."),
+    }[m.status] || "";
+  }
+
+  $("no-clips").classList.toggle("hidden", m.clips.length > 0);
+  const el = $("clips");
+  const signature = m.clips.map(c => c.id + ":" + c.status).join(",");
+  if (el.dataset.signature !== signature) {
+    el.dataset.signature = signature;
+    el.innerHTML = m.clips.map(c => {
+      const title = c.kind === "highlight" ? "⚡ Temps fort" : "↺ Replay";
+      const media = c.status === "ready"
+        ? `<video src="${c.url}" controls playsinline preload="metadata"></video>`
+        : `<div class="pending">${c.status === "error" ? "Échec de la création" : "Préparation…"}</div>`;
+      const dl = c.status === "ready" ? `<a class="btn btn-small" href="${c.url}" download>⬇</a>` : "";
+      return `<div class="clip">${media}<div class="meta"><span>${title} · ${fmtDuration(c.t)}</span>${dl}</div></div>`;
+    }).join("");
+  }
+
+  $("link").textContent = m.url;
+  if (!$("qr").innerHTML) {
+    fetch(`/api/matches/${encodeURIComponent(token)}/qr.svg`).then(r => r.text()).then(svg => { $("qr").innerHTML = svg; });
+  }
+}
+
+// Score incrusté pendant la lecture : on prend le dernier point marqué avant l'instant affiché.
+function updateOverlay() {
+  if (!overlayOn || !timeline.length) { $("overlay").innerHTML = ""; return; }
+  const t = $("video").currentTime;
+  let entry = timeline[0];
+  for (const e of timeline) { if (e.t <= t) entry = e; else break; }
+  $("overlay").innerHTML = scoreboardHTML(match.team_a, match.team_b, entry.score);
+}
+$("video").addEventListener("timeupdate", updateOverlay);
+$("video").addEventListener("seeked", updateOverlay);
+$("video").addEventListener("loadedmetadata", updateOverlay);
+$("toggle-overlay").onclick = () => {
+  overlayOn = !overlayOn;
+  $("toggle-overlay").textContent = overlayOn ? "Masquer le score" : "Afficher le score";
+  updateOverlay();
+};
+
+// Dessin pour le coaching.
+const canvas = $("canvas");
+const ctx = canvas.getContext("2d");
+let drawing = false, last = null;
+function resizeCanvas() {
+  const r = canvas.getBoundingClientRect();
+  canvas.width = r.width * devicePixelRatio;
+  canvas.height = r.height * devicePixelRatio;
+}
+function pos(e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left) * devicePixelRatio, (e.clientY - r.top) * devicePixelRatio];
+}
+canvas.addEventListener("pointerdown", e => { drawing = true; last = pos(e); canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener("pointermove", e => {
+  if (!drawing) return;
+  const p = pos(e);
+  ctx.strokeStyle = "#d6ff3d";
+  ctx.lineWidth = 4 * devicePixelRatio;
+  ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(...last); ctx.lineTo(...p); ctx.stroke();
+  last = p;
+});
+canvas.addEventListener("pointerup", () => { drawing = false; });
+$("draw-btn").onclick = () => {
+  const on = !$("player").classList.contains("drawing");
+  if (on) { $("video").pause(); resizeCanvas(); }
+  $("player").classList.toggle("drawing", on);
+  $("draw-btn").textContent = on ? "✓ Terminer le dessin" : "✎ Dessiner";
+  $("clear-btn").classList.toggle("hidden", !on);
+  $("draw-help").hidden = !on;
+};
+$("clear-btn").onclick = () => ctx.clearRect(0, 0, canvas.width, canvas.height);
+$("video").addEventListener("play", () => ctx.clearRect(0, 0, canvas.width, canvas.height));
+window.addEventListener("resize", () => { if ($("player").classList.contains("drawing")) resizeCanvas(); });
+
+$("share-btn").onclick = async () => {
+  const url = $("link").textContent;
+  if (navigator.share) {
+    try { await navigator.share({ title: document.title, url }); } catch (e) {}
+  } else {
+    try { await navigator.clipboard.writeText(url); toast("Lien copié"); } catch (e) { toast("Copie impossible", true); }
+  }
+};
+
+load();
+</script>
+</body>
+</html>
